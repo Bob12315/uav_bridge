@@ -146,7 +146,8 @@ ros2 launch uav_bridge camera_mavlink.launch.py
 可选参数：
 ```bash
 ros2 launch uav_bridge camera_mavlink.launch.py \
-  mavlink_url:=udp:127.0.0.1:14540 \
+  mavlink_url_rx:=udpin:0.0.0.0:14540 \
+  mavlink_url_tx:=udp:127.0.0.1:14551 \
   enable_image:=true \
   enable_rx:=true \
   enable_tx:=true \
