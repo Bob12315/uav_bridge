@@ -36,12 +36,18 @@ colcon build --packages-select uav_bridge
 source install/setup.bash
 ```
 
+```
+--out=udp:127.0.0.1:14540   # 给 ROS RX
+--out=udp:127.0.0.1:14550   # 给 QGC
+--out=udp:127.0.0.1:14551   # 给 ROS TX
+```
+
 ## 运行示例
 ```bash
 gz sim -v4 -r iris_runway.sdf
 ```
 ```bash
-sim_vehicle.py -D -v ArduCopter -f JSON   --add-param-file=$HOME/gz_ws/src/ardupilot_gazebo/config/gazebo-iris-gimbal.parm   --console --out=udp:127.0.0.1:14540 --out=udp:127.0.0.1:14550
+sim_vehicle.py -D -v ArduCopter -f JSON   --add-param-file=$HOME/gz_ws/src/ardupilot_gazebo/config/gazebo-iris-gimbal.parm   --console --out=udp:127.0.0.1:14540 --out=udp:127.0.0.1:14550 --out=udp:127.0.0.1:14551 
 ```
 
 ## 相机桥（Gazebo → ROS 2，单独启动）
@@ -89,7 +95,7 @@ ros2 run uav_bridge mavlink_bridge --ros-args -p mavlink_url:=udp:127.0.0.1:1454
 
 ## MAVLink 控制（TX，仅发送）
 ```bash
-ros2 run uav_bridge mavlink_tx --ros-args -p mavlink_url:=udp:127.0.0.1:14540
+ros2 run uav_bridge mavlink_tx --ros-args -p mavlink_url:=udp:127.0.0.1:14551
 ```
 
 指令话题（可按需改名）：
@@ -119,10 +125,6 @@ ros2 topic pub --once /uav/cmd/takeoff std_msgs/Float32 "{data: 5.0}"
 # 速度控制（ENU：x=E, y=N, z=U；角速度 yaw_rate=angular.z）
 ros2 topic pub --rate 10 /uav/cmd/velocity geometry_msgs/TwistStamped \
   "{twist: {linear: {x: 1.0, y: 0.0, z: 0.0}, angular: {z: 0.2}}}"
-
-# 相对位移（机体系：x前, y左, z上；单位 m）
-ros2 topic pub --once /uav/cmd/move_relative geometry_msgs/Vector3 \
-  "{x: 5.0, y: 0.0, z: 2.0}"
 
 # 航点（lat, lon, alt）
 ros2 topic pub --once /uav/cmd/waypoint sensor_msgs/NavSatFix \
