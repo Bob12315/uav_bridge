@@ -17,7 +17,7 @@ def generate_launch_description():
         [
             DeclareLaunchArgument(
                 "mavlink_url",
-                default_value="udp:127.0.0.1:14540",
+                default_value="udp:127.0.0.1:14551",
                 description="MAVLink connection URL.",
             ),
             DeclareLaunchArgument(
