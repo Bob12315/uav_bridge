@@ -12,7 +12,8 @@ def generate_launch_description():
     enable_image = LaunchConfiguration("enable_image")
     gz_image_topic = LaunchConfiguration("gz_image_topic")
     ros_image_topic = LaunchConfiguration("ros_image_topic")
-    mavlink_url = LaunchConfiguration("mavlink_url")
+    mavlink_url_rx = LaunchConfiguration("mavlink_url_rx")
+    mavlink_url_tx = LaunchConfiguration("mavlink_url_tx")
     enable_rqt = LaunchConfiguration("enable_rqt")
     rqt_image_topic = LaunchConfiguration("rqt_image_topic")
     enable_rx = LaunchConfiguration("enable_rx")
@@ -20,6 +21,7 @@ def generate_launch_description():
     waypoint_relative_alt = LaunchConfiguration("waypoint_relative_alt")
     default_takeoff_alt = LaunchConfiguration("default_takeoff_alt")
     default_thrust = LaunchConfiguration("default_thrust")
+    reconnect_timeout_s = LaunchConfiguration("reconnect_timeout_s")
 
     return LaunchDescription(
         [
@@ -39,9 +41,14 @@ def generate_launch_description():
                 description="ROS2 image topic (sensor_msgs/Image).",
             ),
             DeclareLaunchArgument(
-                "mavlink_url",
-                default_value="udp:127.0.0.1:14540",
-                description="MAVLink connection URL.",
+                "mavlink_url_rx",
+                default_value="udpin:0.0.0.0:14540",
+                description="MAVLink RX URL (listener).",
+            ),
+            DeclareLaunchArgument(
+                "mavlink_url_tx",
+                default_value="udp:127.0.0.1:14551",
+                description="MAVLink TX URL (target).",
             ),
             DeclareLaunchArgument(
                 "enable_rqt",
@@ -78,6 +85,11 @@ def generate_launch_description():
                 default_value="0.5",
                 description="Default thrust for attitude control (0.0-1.0).",
             ),
+            DeclareLaunchArgument(
+                "reconnect_timeout_s",
+                default_value="5.0",
+                description="Reconnect timeout in seconds for MAVLink RX.",
+            ),
             Node(
                 condition=IfCondition(enable_image),
                 package="ros_gz_image",
@@ -92,7 +104,10 @@ def generate_launch_description():
                 package="uav_bridge",
                 executable="mavlink_bridge",
                 name="mavlink_bridge",
-                parameters=[{"mavlink_url": mavlink_url}],
+                parameters=[
+                    {"mavlink_url": mavlink_url_rx},
+                    {"reconnect_timeout_s": reconnect_timeout_s},
+                ],
                 output="screen",
             ),
             Node(
@@ -101,7 +116,7 @@ def generate_launch_description():
                 executable="mavlink_tx",
                 name="mavlink_tx",
                 parameters=[
-                    {"mavlink_url": mavlink_url},
+                    {"mavlink_url": mavlink_url_tx},
                     {"waypoint_relative_alt": waypoint_relative_alt},
                     {"default_takeoff_alt": default_takeoff_alt},
                     {"default_thrust": default_thrust},
