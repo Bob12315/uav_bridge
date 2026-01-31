@@ -11,6 +11,7 @@ Topics (recommended defaults):
   /uav/cmd/waypoint    sensor_msgs/NavSatFix         lat/lon/alt (alt in meters)
   /uav/cmd/attitude    geometry_msgs/QuaternionStamped  attitude setpoint
   /uav/cmd/thrust      std_msgs/Float32              0.0-1.0
+  /uav/cmd/gimbal_target geometry_msgs/Vector3       pitch/roll/yaw in degrees (x=pitch,y=roll,z=yaw)
 
 Notes:
   - This node only sends MAVLink commands; it does not read or publish state.
@@ -68,6 +69,7 @@ class MavlinkTxNode(Node):
         self.declare_parameter("waypoint_relative_alt", True)
         self.declare_parameter("default_takeoff_alt", 5.0)
         self.declare_parameter("default_thrust", 0.5)
+        self.declare_parameter("gimbal_mount_mode", 2)
 
         mavlink_url = (
             self.get_parameter("mavlink_url")
@@ -88,6 +90,11 @@ class MavlinkTxNode(Node):
             self.get_parameter("default_thrust")
             .get_parameter_value()
             .double_value
+        )
+        self._gimbal_mount_mode = int(
+            self.get_parameter("gimbal_mount_mode")
+            .get_parameter_value()
+            .integer_value
         )
 
         self._error_flag = False
@@ -122,6 +129,7 @@ class MavlinkTxNode(Node):
         self.create_subscription(Float32, "uav/cmd/thrust", self.on_thrust, 10)
         self.create_subscription(UInt16MultiArray, "uav/cmd/rc_override", self.on_rc_override, 10)
         self.create_subscription(Vector3, "uav/cmd/move_relative", self.on_move_relative, 10)
+        self.create_subscription(Vector3, "uav/cmd/gimbal_target", self.on_gimbal_target, 10)
         self.create_subscription(PoseStamped, "uav/pose", self.on_pose, 10)
 
         # TODO: placeholders for future command topics (keep for later extension).
@@ -332,6 +340,29 @@ class MavlinkTxNode(Node):
             )
         except Exception as exc:
             self._set_error(True, f"RC_CHANNELS_OVERRIDE failed: {exc}")
+
+    def on_gimbal_target(self, msg: Vector3):
+        if not self._ensure_master():
+            return
+        pitch = float(msg.x)
+        roll = float(msg.y)
+        yaw = float(msg.z)
+        try:
+            self.master.mav.command_long_send(
+                self.master.target_system,
+                self.master.target_component,
+                mavutil.mavlink.MAV_CMD_DO_MOUNT_CONTROL,
+                0,
+                pitch,
+                roll,
+                yaw,
+                0.0,
+                0.0,
+                0.0,
+                float(self._gimbal_mount_mode),
+            )
+        except Exception as exc:
+            self._set_error(True, f"DO_MOUNT_CONTROL failed: {exc}")
 
     def on_pose(self, msg: PoseStamped):
         self._pose_pos["x"] = msg.pose.position.x
