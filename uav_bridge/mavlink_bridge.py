@@ -40,10 +40,11 @@ def euler_to_quaternion(roll: float, pitch: float, yaw: float):
     cr = math.cos(roll * 0.5)
     sr = math.sin(roll * 0.5)
 
-    qw = cr * cp * cy + sr * cp * sy
-    qx = sr * cp * cy - cr * cp * sy
-    qy = cr * sp * cy + sr * sp * sy
-    qz = cr * cp * sy - sr * cp * cy
+    # ZYX (yaw-pitch-roll) to quaternion
+    qw = cr * cp * cy + sr * sp * sy
+    qx = sr * cp * cy - cr * sp * sy
+    qy = cr * sp * cy + sr * cp * sy
+    qz = cr * cp * sy - sr * sp * cy
 
     return qx, qy, qz, qw
 
@@ -117,6 +118,16 @@ def ecef_to_enu(x: float, y: float, z: float,
     u =  cos_lat0 * cos_lon0 * dx + cos_lat0 * sin_lon0 * dy + sin_lat0 * dz
     return e, n, u
 # ---------------------------------------------------------------------- #
+
+def is_valid_gps_fix(lat_deg: float, lon_deg: float) -> bool:
+    # Reject zero/NaN and out-of-range values to avoid locking ENU at invalid fix
+    if not math.isfinite(lat_deg) or not math.isfinite(lon_deg):
+        return False
+    if abs(lat_deg) < 1e-9 and abs(lon_deg) < 1e-9:
+        return False
+    if abs(lat_deg) > 90.0 or abs(lon_deg) > 180.0:
+        return False
+    return True
 
 
 class MavlinkBridgeNode(Node):
@@ -227,8 +238,8 @@ class MavlinkBridgeNode(Node):
         navsat.position_covariance_type = NavSatFix.COVARIANCE_TYPE_UNKNOWN
         self.navsat_pub.publish(navsat)
 
-        # 2) Set ENU reference once
-        if not self._enu_ref_set:
+        # 2) Set ENU reference once (skip invalid GPS fix)
+        if not self._enu_ref_set and is_valid_gps_fix(lat, lon):
             self._ref_lat = lat
             self._ref_lon = lon
             self._ref_alt = alt_amsl
@@ -237,6 +248,11 @@ class MavlinkBridgeNode(Node):
             self.get_logger().info(
                 f"ENU reference set: lat0={lat:.7f}, lon0={lon:.7f}, alt0={alt_amsl:.2f}m"
             )
+        elif not self._enu_ref_set:
+            self.get_logger().warn(
+                f"Invalid GPS fix, skip ENU ref set: lat={lat:.7f}, lon={lon:.7f}"
+            )
+            return
 
         # 3) Compute ENU meters and update pose position
         x, y, z = llh_to_ecef(lat, lon, alt_amsl)

@@ -47,7 +47,7 @@ source install/setup.bash
 gz sim -v4 -r iris_runway.sdf
 ```
 ```bash
-sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON --map --console --add-param-file=$HOME/gz_ws/src/ardupilot_gazebo/config/gazebo-iris-gimbal.parm --out=udp:127.0.0.1:14540 --out=udp:127.0.0.1:14550 --out=udp:127.0.0.1:14551 
+sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON --console --add-param-file=$HOME/gz_ws/src/ardupilot_gazebo/config/gazebo-iris-gimbal.parm --out=udp:127.0.0.1:14540 --out=udp:127.0.0.1:14550 --out=udp:127.0.0.1:14551 
 ```
 
 ## 相机桥（Gazebo → ROS 2，单独启动）
@@ -137,7 +137,7 @@ ros2 topic pub --once /uav/cmd/rc_override std_msgs/UInt16MultiArray \
 
 # 云台目标（pitch/roll/yaw，单位度；对应 MAV_CMD_DO_MOUNT_CONTROL）
 ros2 topic pub --once /uav/cmd/gimbal_target geometry_msgs/Vector3 \
-  "{x: -10.0, y: 0.0, z: 30.0}"
+  "{x: -10.0, y: 0.0, z: 0.0}"
 
 # 降落
 ros2 topic pub --once /uav/cmd/land std_msgs/Empty "{}"
