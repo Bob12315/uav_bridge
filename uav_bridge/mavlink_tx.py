@@ -50,14 +50,14 @@ def rotate_vector_by_quat(qx: float, qy: float, qz: float, qw: float,
 
     # Quaternion-vector multiplication: v' = q * v * q_conj
     # Convert v to pure quaternion (vx, vy, vz, 0).
-    ix =  qw * vx + qy * vz - qz * vy
-    iy =  qw * vy + qz * vx - qx * vz
-    iz =  qw * vz + qx * vy - qy * vx
-    iw = -qx * vx - qy * vy - qz * vz
+    ix = qw * vx - qy * vz + qz * vy
+    iy = qw * vy - qz * vx + qx * vz
+    iz = qw * vz - qx * vy + qy * vx
+    iw = qx * vx + qy * vy + qz * vz
 
-    rx = ix * qw + iw * -qx + iy * -qz - iz * -qy
-    ry = iy * qw + iw * -qy + iz * -qx - ix * -qz
-    rz = iz * qw + iw * -qz + ix * -qy - iy * -qx
+    rx = ix * qw + iw * qx + iy * qz - iz * qy
+    ry = iy * qw + iw * qy + iz * qx - ix * qz
+    rz = iz * qw + iw * qz + ix * qy - iy * qx
     return rx, ry, rz
 
 
