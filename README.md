@@ -44,7 +44,7 @@ source install/setup.bash
 
 ## 运行示例
 ```bash
-gz sim -v4 -r iris.sdf
+gz sim -v4 -r iris_runway.sdf
 ```
 ```bash
 sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON --console --add-param-file=$HOME/gz_ws/src/ardupilot_gazebo/config/gazebo-iris-gimbal.parm --out=udp:127.0.0.1:14540 --out=udp:127.0.0.1:14550 --out=udp:127.0.0.1:14551 
