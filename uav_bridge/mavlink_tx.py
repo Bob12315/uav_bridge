@@ -11,7 +11,7 @@ Topics (recommended defaults):
   /uav/cmd/waypoint    sensor_msgs/NavSatFix         lat/lon/alt (alt in meters)
   /uav/cmd/attitude    geometry_msgs/QuaternionStamped  attitude setpoint
   /uav/cmd/thrust      std_msgs/Float32              0.0-1.0
-  /uav/cmd/move_relative geometry_msgs/Vector3       body move (x=fwd,y=left,z=up, meters)
+  /uav/cmd/move_relative geometry_msgs/Vector3       body move (x=right,y=fwd,z=up, meters)
   /uav/cmd/move_relative_yaw geometry_msgs/Twist     body move + relative yaw (angular.z, rad)
   /uav/cmd/gimbal_target geometry_msgs/Vector3       pitch/roll/yaw in degrees (x=pitch,y=roll,z=yaw)
 
@@ -350,18 +350,20 @@ class MavlinkTxNode(Node):
         except Exception as exc:
             self._set_error(True, f"DO_MOUNT_CONTROL failed: {exc}")
 
-    def _send_move_relative_body(self, dx_body: float, dy_body: float, dz_body: float):
+    def _send_move_relative_body(self, x_body: float, y_body: float, z_body: float):
         if not self._ensure_master():
             return
 
         # 直接使用 BODY_OFFSET_NED：
         # 在“发送命令那一刻”的机体朝向下解释位移（机头为前）。
-        # BODY_NED 轴: x前, y右, z下；因此 y/z 需要取反。
-        target_body_x = dx_body
-        target_body_y = -dy_body
-        target_body_z = -dz_body
+        # 输入轴约定: x右, y前, z上。
+        # BODY_NED 轴: x前, y右, z下。
+        target_body_x = y_body
+        target_body_y = x_body
+        target_body_z = -z_body
 
-        # 仅发送位置目标。
+        # 仅发送位置目标，并显式给 yaw_rate=0 来保持当前机头朝向。
+        # 否则部分飞控在位置移动时会默认“朝运动方向转头”。
         type_mask = (
             mavutil.mavlink.POSITION_TARGET_TYPEMASK_VX_IGNORE
             | mavutil.mavlink.POSITION_TARGET_TYPEMASK_VY_IGNORE
@@ -370,7 +372,6 @@ class MavlinkTxNode(Node):
             | mavutil.mavlink.POSITION_TARGET_TYPEMASK_AY_IGNORE
             | mavutil.mavlink.POSITION_TARGET_TYPEMASK_AZ_IGNORE
             | mavutil.mavlink.POSITION_TARGET_TYPEMASK_YAW_IGNORE
-            | mavutil.mavlink.POSITION_TARGET_TYPEMASK_YAW_RATE_IGNORE
         )
         frame = getattr(
             mavutil.mavlink,
