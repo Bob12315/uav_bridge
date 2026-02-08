@@ -11,6 +11,8 @@ Topics (recommended defaults):
   /uav/cmd/waypoint    sensor_msgs/NavSatFix         lat/lon/alt (alt in meters)
   /uav/cmd/attitude    geometry_msgs/QuaternionStamped  attitude setpoint
   /uav/cmd/thrust      std_msgs/Float32              0.0-1.0
+  /uav/cmd/move_relative geometry_msgs/Vector3       body move (x=fwd,y=left,z=up, meters)
+  /uav/cmd/move_relative_yaw geometry_msgs/Twist     body move + relative yaw (angular.z, rad)
   /uav/cmd/gimbal_target geometry_msgs/Vector3       pitch/roll/yaw in degrees (x=pitch,y=roll,z=yaw)
 
 Notes:
@@ -26,39 +28,15 @@ import rclpy
 from rclpy.node import Node
 
 from std_msgs.msg import Bool, String, Float32, Empty, UInt16MultiArray
-from geometry_msgs.msg import TwistStamped, QuaternionStamped, PoseStamped, Vector3
+from geometry_msgs.msg import TwistStamped, QuaternionStamped, Vector3, Twist
 from sensor_msgs.msg import NavSatFix
 
 from pymavlink import mavutil
 
 
 def clamp(val: float, lo: float, hi: float) -> float:
+    """限幅工具：把 val 约束到 [lo, hi]。"""
     return max(lo, min(hi, val))
-
-
-def rotate_vector_by_quat(qx: float, qy: float, qz: float, qw: float,
-                          vx: float, vy: float, vz: float):
-    """Rotate vector by quaternion (x,y,z,w)."""
-    # Normalize quaternion to avoid drift.
-    norm = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
-    if norm == 0.0:
-        return vx, vy, vz
-    qx /= norm
-    qy /= norm
-    qz /= norm
-    qw /= norm
-
-    # Quaternion-vector multiplication: v' = q * v * q_conj
-    # Convert v to pure quaternion (vx, vy, vz, 0).
-    ix = qw * vx - qy * vz + qz * vy
-    iy = qw * vy - qz * vx + qx * vz
-    iz = qw * vz - qx * vy + qy * vx
-    iw = qx * vx + qy * vy + qz * vz
-
-    rx = ix * qw + iw * qx + iy * qz - iz * qy
-    ry = iy * qw + iw * qy + iz * qx - ix * qz
-    rz = iz * qw + iw * qz + ix * qy - iy * qx
-    return rx, ry, rz
 
 
 class MavlinkTxNode(Node):
@@ -97,12 +75,9 @@ class MavlinkTxNode(Node):
             .integer_value
         )
 
+        # 对外暴露的发送异常标志，便于上层节点做降级处理。
         self._error_flag = False
         self._error_pub = self.create_publisher(Bool, "uav/tx_error", 10)
-
-        self._pose_ready = False
-        self._pose_pos = {"x": 0.0, "y": 0.0, "z": 0.0}
-        self._pose_quat = {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0}
 
         self.get_logger().info(f"Connecting to MAVLink at {mavlink_url}")
         try:
@@ -129,17 +104,19 @@ class MavlinkTxNode(Node):
         self.create_subscription(Float32, "uav/cmd/thrust", self.on_thrust, 10)
         self.create_subscription(UInt16MultiArray, "uav/cmd/rc_override", self.on_rc_override, 10)
         self.create_subscription(Vector3, "uav/cmd/move_relative", self.on_move_relative, 10)
+        self.create_subscription(Twist, "uav/cmd/move_relative_yaw", self.on_move_relative_yaw, 10)
         self.create_subscription(Vector3, "uav/cmd/gimbal_target", self.on_gimbal_target, 10)
-        self.create_subscription(PoseStamped, "uav/pose", self.on_pose, 10)
 
         # TODO: placeholders for future command topics (keep for later extension).
         # self.create_subscription(..., "uav/cmd/mission", self.on_mission, 10)
         # self.create_subscription(..., "uav/cmd/rc_override", self.on_rc_override, 10)
 
     def _now_ms(self) -> int:
+        # MAVLink time_boot_ms 是 uint32，这里取毫秒并做 32bit 环绕。
         return int((self.get_clock().now().nanoseconds / 1e6) % 4294967295)
 
     def _set_error(self, flag: bool, msg: str):
+        # 仅在状态翻转时打印日志，避免重复刷屏。
         if flag and not self._error_flag:
             self.get_logger().error(f"TX_ERROR_FLAG=1 {msg}")
         elif not flag and self._error_flag:
@@ -156,6 +133,7 @@ class MavlinkTxNode(Node):
         return True
 
     def _send_command_long(self, command: int, params):
+        # COMMAND_LONG 固定 7 个浮点参数。
         if not self._ensure_master():
             return
         try:
@@ -207,12 +185,13 @@ class MavlinkTxNode(Node):
     def on_velocity(self, msg: TwistStamped):
         if not self._ensure_master():
             return
-        # ENU -> NED
+        # ROS 常见 ENU 速度输入 -> MAVLink LOCAL_NED。
         vx = msg.twist.linear.y
         vy = msg.twist.linear.x
         vz = -msg.twist.linear.z
         yaw_rate = msg.twist.angular.z
 
+        # 仅启用速度 + yaw_rate 控制，屏蔽位置/加速度/yaw 角。
         type_mask = (
             mavutil.mavlink.POSITION_TARGET_TYPEMASK_X_IGNORE
             | mavutil.mavlink.POSITION_TARGET_TYPEMASK_Y_IGNORE
@@ -240,6 +219,7 @@ class MavlinkTxNode(Node):
     def on_waypoint(self, msg: NavSatFix):
         if not self._ensure_master():
             return
+        # GLOBAL_INT 系列消息使用 1e7 缩放的整型经纬度。
         lat = int(msg.latitude * 1e7)
         lon = int(msg.longitude * 1e7)
         alt = float(msg.altitude)
@@ -249,6 +229,7 @@ class MavlinkTxNode(Node):
             if self._waypoint_relative_alt
             else mavutil.mavlink.MAV_FRAME_GLOBAL_INT
         )
+        # 仅给位置目标，忽略速度/加速度/yaw/yaw_rate。
         type_mask = (
             mavutil.mavlink.POSITION_TARGET_TYPEMASK_VX_IGNORE
             | mavutil.mavlink.POSITION_TARGET_TYPEMASK_VY_IGNORE
@@ -282,9 +263,11 @@ class MavlinkTxNode(Node):
         q = msg.quaternion
         qx, qy, qz, qw = q.x, q.y, q.z, q.w
         if math.isclose(qw, 0.0) and math.isclose(qx, 0.0) and math.isclose(qy, 0.0) and math.isclose(qz, 0.0):
+            # 全零四元数无效，直接忽略。
             return
         thrust = float(clamp(self._thrust, 0.0, 1.0))
 
+        # 仅按姿态四元数控制，忽略角速度通道。
         type_mask = (
             mavutil.mavlink.ATTITUDE_TARGET_TYPEMASK_BODY_ROLL_RATE_IGNORE
             | mavutil.mavlink.ATTITUDE_TARGET_TYPEMASK_BODY_PITCH_RATE_IGNORE
@@ -304,6 +287,7 @@ class MavlinkTxNode(Node):
             self._set_error(True, f"SET_ATTITUDE_TARGET failed: {exc}")
 
     def on_thrust(self, msg: Float32):
+        # 推力作为姿态控制的附加通道，范围固定在 [0, 1]。
         self._thrust = clamp(float(msg.data), 0.0, 1.0)
 
     def on_rc_override(self, msg: UInt16MultiArray):
@@ -312,6 +296,7 @@ class MavlinkTxNode(Node):
         if not msg.data:
             return
 
+        # ArduPilot/PX4 经典 RC_OVERRIDE 为 8 通道；0xFFFF 表示“忽略该通道”。
         channels = [0xFFFF] * 8
         for i in range(min(8, len(msg.data))):
             val = int(msg.data[i])
@@ -344,6 +329,7 @@ class MavlinkTxNode(Node):
     def on_gimbal_target(self, msg: Vector3):
         if not self._ensure_master():
             return
+        # 约定输入单位为度：x=pitch, y=roll, z=yaw。
         pitch = float(msg.x)
         roll = float(msg.y)
         yaw = float(msg.z)
@@ -364,47 +350,18 @@ class MavlinkTxNode(Node):
         except Exception as exc:
             self._set_error(True, f"DO_MOUNT_CONTROL failed: {exc}")
 
-    def on_pose(self, msg: PoseStamped):
-        self._pose_pos["x"] = msg.pose.position.x
-        self._pose_pos["y"] = msg.pose.position.y
-        self._pose_pos["z"] = msg.pose.position.z
-        self._pose_quat["x"] = msg.pose.orientation.x
-        self._pose_quat["y"] = msg.pose.orientation.y
-        self._pose_quat["z"] = msg.pose.orientation.z
-        self._pose_quat["w"] = msg.pose.orientation.w
-        self._pose_ready = True
-
-    def on_move_relative(self, msg: Vector3):
+    def _send_move_relative_body(self, dx_body: float, dy_body: float, dz_body: float):
         if not self._ensure_master():
             return
-        if not self._pose_ready:
-            self._set_error(True, "No pose received; cannot move relative")
-            return
 
-        # Body-frame offset (meters): x forward, y left, z up.
-        dx_body = float(msg.x)
-        dy_body = float(msg.y)
-        dz_body = float(msg.z)
+        # 直接使用 BODY_OFFSET_NED：
+        # 在“发送命令那一刻”的机体朝向下解释位移（机头为前）。
+        # BODY_NED 轴: x前, y右, z下；因此 y/z 需要取反。
+        target_body_x = dx_body
+        target_body_y = -dy_body
+        target_body_z = -dz_body
 
-        # Rotate body offset into ENU world frame using current orientation.
-        qx = self._pose_quat["x"]
-        qy = self._pose_quat["y"]
-        qz = self._pose_quat["z"]
-        qw = self._pose_quat["w"]
-        dx_enu, dy_enu, dz_enu = rotate_vector_by_quat(
-            qx, qy, qz, qw, dx_body, dy_body, dz_body
-        )
-
-        # Target position in ENU.
-        target_e = self._pose_pos["x"] + dx_enu
-        target_n = self._pose_pos["y"] + dy_enu
-        target_u = self._pose_pos["z"] + dz_enu
-
-        # ENU -> NED for MAVLink LOCAL_NED frame.
-        target_ned_x = target_n
-        target_ned_y = target_e
-        target_ned_z = -target_u
-
+        # 仅发送位置目标。
         type_mask = (
             mavutil.mavlink.POSITION_TARGET_TYPEMASK_VX_IGNORE
             | mavutil.mavlink.POSITION_TARGET_TYPEMASK_VY_IGNORE
@@ -415,20 +372,50 @@ class MavlinkTxNode(Node):
             | mavutil.mavlink.POSITION_TARGET_TYPEMASK_YAW_IGNORE
             | mavutil.mavlink.POSITION_TARGET_TYPEMASK_YAW_RATE_IGNORE
         )
+        frame = getattr(
+            mavutil.mavlink,
+            "MAV_FRAME_BODY_OFFSET_NED",
+            mavutil.mavlink.MAV_FRAME_BODY_NED,
+        )
         try:
             self.master.mav.set_position_target_local_ned_send(
                 self._now_ms(),
                 self.master.target_system,
                 self.master.target_component,
-                mavutil.mavlink.MAV_FRAME_LOCAL_NED,
+                frame,
                 type_mask,
-                float(target_ned_x), float(target_ned_y), float(target_ned_z),
+                float(target_body_x), float(target_body_y), float(target_body_z),
                 0.0, 0.0, 0.0,
                 0.0, 0.0, 0.0,
                 0.0, 0.0,
             )
         except Exception as exc:
             self._set_error(True, f"SET_POSITION_TARGET_LOCAL_NED (pos) failed: {exc}")
+
+    def _send_relative_yaw_deg(self, yaw_deg: float):
+        # 相对偏航：正值顺时针，负值逆时针（ArduPilot 约定）。
+        if not self._ensure_master():
+            return
+        if abs(yaw_deg) < 1e-3:
+            return
+        direction = 1.0 if yaw_deg >= 0.0 else -1.0
+        self._send_command_long(
+            mavutil.mavlink.MAV_CMD_CONDITION_YAW,
+            [abs(yaw_deg), 0.0, direction, 1.0, 0.0, 0.0, 0.0],
+        )
+
+    def on_move_relative(self, msg: Vector3):
+        # 兼容旧接口：仅相对位移，不带偏航。
+        self._send_move_relative_body(float(msg.x), float(msg.y), float(msg.z))
+
+    def on_move_relative_yaw(self, msg: Twist):
+        # 新接口：linear 为机体系位移（m），angular.z 为相对偏航（rad）。
+        self._send_move_relative_body(
+            float(msg.linear.x),
+            float(msg.linear.y),
+            float(msg.linear.z),
+        )
+        self._send_relative_yaw_deg(math.degrees(float(msg.angular.z)))
 
 
 def main(args=None):

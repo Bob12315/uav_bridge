@@ -105,6 +105,7 @@ ros2 run uav_bridge mavlink_tx --ros-args -p mavlink_url:=udp:127.0.0.1:14551
 - `/uav/cmd/land` (std_msgs/Empty)
 - `/uav/cmd/velocity` (geometry_msgs/TwistStamped)  # ENU m/s, yaw_rate=angular.z
 - `/uav/cmd/move_relative` (geometry_msgs/Vector3)   # 机体坐标相对位移，单位 m（x前, y左, z上）
+- `/uav/cmd/move_relative_yaw` (geometry_msgs/Twist) # 机体相对位移 + 相对偏航（linear: m, angular.z: rad）
 - `/uav/cmd/waypoint` (sensor_msgs/NavSatFix)        # lat/lon/alt
 - `/uav/cmd/attitude` (geometry_msgs/QuaternionStamped)
 - `/uav/cmd/thrust` (std_msgs/Float32)               # 0.0-1.0
@@ -126,6 +127,10 @@ ros2 topic pub --once /uav/cmd/takeoff std_msgs/Float32 "{data: 5.0}"
 # 速度控制（ENU：x=E, y=N, z=U；角速度 yaw_rate=angular.z）
 ros2 topic pub --rate 10 /uav/cmd/velocity geometry_msgs/TwistStamped \
   "{twist: {linear: {x: 1.0, y: 0.0, z: 0.0}, angular: {z: 0.2}}}"
+
+# 机体系相对位移 + 相对偏航（angular.z 单位 rad，示例为 +30deg）
+ros2 topic pub --once /uav/cmd/move_relative_yaw geometry_msgs/Twist \
+  "{linear: {x: 2.0, y: 0.0, z: 0.0}, angular: {z: 0.5236}}"
 
 # 航点（lat, lon, alt）
 ros2 topic pub --once /uav/cmd/waypoint sensor_msgs/NavSatFix \
@@ -168,3 +173,5 @@ ros2 run uav_bridge mavlink_dump -- --duration 5 --types HEARTBEAT,ATTITUDE
 ## 备注
 - RC override 需要持续发送才能保持（单次发送会在几秒后失效）。
 - 坐标系约定：速度指令使用 ENU；MAVLink 下发时转换为 NED。
+- `move_relative` / `move_relative_yaw` 使用机体系位移（x前, y左, z上），内部按 `MAV_FRAME_BODY_OFFSET_NED` 下发。
+- `move_relative_yaw` 的 `angular.z` 为相对偏航（rad）；当前实现转换为 `MAV_CMD_CONDITION_YAW`（正值顺时针）。
