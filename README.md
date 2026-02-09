@@ -3,7 +3,7 @@
 ROS 2 + MAVLink 工具集（通用），提供 MAVLink 遥测接入与控制发送节点。
 
 ## 组件
-- `mavlink_bridge`：MAVLink 遥测 → ROS 2 话题（pose/odom/battery 等）
+- `mavlink_bridge`：MAVLink 遥测 → ROS 2 话题（pose/odom/battery/云台角度等）
 - `mavlink_tx`：ROS 2 指令 → MAVLink 控制（只发送）
 - `mavlink_dump`：打印原始 MAVLink 消息，便于调试
 - `camera_mavlink.launch.py`：可选的相机桥 + MAVLink RX/TX 组合启动
@@ -65,7 +65,7 @@ ros2 run uav_bridge mavlink_bridge --ros-args -p mavlink_url:=udp:127.0.0.1:1454
 
 ### mavlink_bridge 详细说明
 
-用途：订阅 MAVLink 遥测消息并发布为 ROS 2 话题（只读），目前解析 HEARTBEAT / GLOBAL_POSITION_INT / ATTITUDE / BATTERY_STATUS / SYS_STATUS。
+用途：订阅 MAVLink 遥测消息并发布为 ROS 2 话题。目前解析 HEARTBEAT / GLOBAL_POSITION_INT / ATTITUDE / BATTERY_STATUS / SYS_STATUS / MOUNT_STATUS / GIMBAL_REPORT / GIMBAL_DEVICE_ATTITUDE_STATUS。
 
 参数：
 - `mavlink_url`：MAVLink 连接地址（默认 `udp:127.0.0.1:14540`）。
@@ -78,6 +78,7 @@ ros2 run uav_bridge mavlink_bridge --ros-args -p mavlink_url:=udp:127.0.0.1:1454
 - `/uav/pose` (geometry_msgs/PoseStamped)
 - `/uav/odom` (nav_msgs/Odometry)
 - `/uav/battery` (sensor_msgs/BatteryState)
+- `/uav/gimbal/angle` (geometry_msgs/Vector3)  # pitch/roll/yaw (degrees, from MOUNT_STATUS/GIMBAL_REPORT/GIMBAL_DEVICE_ATTITUDE_STATUS)
 
 坐标/数据约定：
 - ENU 原点：第一次收到有效 `GLOBAL_POSITION_INT` 时锁定 (lat0, lon0, alt0)。

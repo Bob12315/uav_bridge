@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""ROS2 <-> MAVLink bridge (只读：HEARTBEAT / GLOBAL_POSITION_INT / ATTITUDE / BATTERY)
+"""ROS2 <-> MAVLink bridge (telemetry RX)
 + ENU 坐标转换 & Odometry 输出
 
 Topics:
@@ -11,11 +11,13 @@ Topics:
   /uav/pose            geometry_msgs/PoseStamped          (position=ENU meters, orientation=ATTITUDE)
   /uav/odom            nav_msgs/Odometry                  (position=ENU meters, orientation=ATTITUDE)
   /uav/battery         sensor_msgs/BatteryState
+  /uav/gimbal/angle    geometry_msgs/Vector3              (x=pitch,y=roll,z=yaw; degrees)
 
 Notes:
   - ENU 原点在第一次收到有效 GLOBAL_POSITION_INT 时锁定（lat0,lon0,alt0）。
   - 速度来自飞控 EKF 输出：GLOBAL_POSITION_INT.vx/vy/vz（NED, cm/s）转换为 ENU（m/s）。
   - 角速度来自 ATTITUDE.rollspeed/pitchspeed/yawspeed（rad/s），按机体系写入 odom.twist.angular。
+  - 云台角度优先从 MOUNT_STATUS/GIMBAL_REPORT/GIMBAL_DEVICE_ATTITUDE_STATUS 解析。
 """
 
 import math
@@ -25,7 +27,7 @@ from rclpy.node import Node
 
 from std_msgs.msg import String, Bool, UInt8
 from sensor_msgs.msg import NavSatFix, BatteryState
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, Vector3
 from nav_msgs.msg import Odometry
 
 from pymavlink import mavutil
@@ -47,6 +49,27 @@ def euler_to_quaternion(roll: float, pitch: float, yaw: float):
     qz = cr * cp * sy - sr * sp * cy
 
     return qx, qy, qz, qw
+
+
+def quaternion_to_euler(qw: float, qx: float, qy: float, qz: float):
+    """四元数 (w, x, y, z) -> 欧拉角 (roll, pitch, yaw), 单位 rad"""
+    # roll (x-axis rotation)
+    sinr_cosp = 2.0 * (qw * qx + qy * qz)
+    cosr_cosp = 1.0 - 2.0 * (qx * qx + qy * qy)
+    roll = math.atan2(sinr_cosp, cosr_cosp)
+
+    # pitch (y-axis rotation)
+    sinp = 2.0 * (qw * qy - qz * qx)
+    if abs(sinp) >= 1.0:
+        pitch = math.copysign(math.pi / 2.0, sinp)
+    else:
+        pitch = math.asin(sinp)
+
+    # yaw (z-axis rotation)
+    siny_cosp = 2.0 * (qw * qz + qx * qy)
+    cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz)
+    yaw = math.atan2(siny_cosp, cosy_cosp)
+    return roll, pitch, yaw
 
 
 def decode_copter_mode(custom_mode: int) -> str:
@@ -159,6 +182,10 @@ class MavlinkBridgeNode(Node):
         self.odom_pub = self.create_publisher(Odometry, "uav/odom", 10)
 
         self.batt_pub = self.create_publisher(BatteryState, "uav/battery", 10)
+        self.gimbal_angle_pub = self.create_publisher(Vector3, "uav/gimbal/angle", 10)
+        self._gimbal_seen = False
+        self._gimbal_warned = False
+        self._startup_ns = self.get_clock().now().nanoseconds
 
         # last pose (ENU meters)
         self._last_pos = {"x": 0.0, "y": 0.0, "z": 0.0}
@@ -199,6 +226,21 @@ class MavlinkBridgeNode(Node):
                 self.handle_battery_status(msg)
             elif msg_type == "SYS_STATUS":
                 self.handle_sys_status(msg)
+            elif msg_type == "MOUNT_STATUS":
+                self.handle_mount_status(msg)
+            elif msg_type == "GIMBAL_REPORT":
+                self.handle_gimbal_report(msg)
+            elif msg_type == "GIMBAL_DEVICE_ATTITUDE_STATUS":
+                self.handle_gimbal_device_attitude_status(msg)
+
+        if not self._gimbal_seen and not self._gimbal_warned:
+            elapsed_s = (self.get_clock().now().nanoseconds - self._startup_ns) / 1e9
+            if elapsed_s > 5.0:
+                self._gimbal_warned = True
+                self.get_logger().warn(
+                    "No gimbal telemetry yet (MOUNT_STATUS/GIMBAL_REPORT/"
+                    "GIMBAL_DEVICE_ATTITUDE_STATUS). Check autopilot stream settings."
+                )
 
     def handle_heartbeat(self, msg):
         base_mode = msg.base_mode
@@ -341,6 +383,44 @@ class MavlinkBridgeNode(Node):
             batt.percentage = float("nan")
 
         self.batt_pub.publish(batt)
+
+    def handle_mount_status(self, msg):
+        # MOUNT_STATUS 的 pointing_* 单位是 cdeg（0.01 度）。
+        pitch_deg = float(msg.pointing_a) / 100.0
+        roll_deg = float(msg.pointing_b) / 100.0
+        yaw_deg = float(msg.pointing_c) / 100.0
+        self._publish_gimbal_angle(pitch_deg, roll_deg, yaw_deg, "MOUNT_STATUS")
+
+    def handle_gimbal_report(self, msg):
+        # GIMBAL_REPORT.joint_* 常见实现为弧度（ArduPilot）。
+        roll_deg = math.degrees(float(msg.joint_roll))
+        pitch_deg = math.degrees(float(msg.joint_el))
+        yaw_deg = math.degrees(float(msg.joint_az))
+        self._publish_gimbal_angle(pitch_deg, roll_deg, yaw_deg, "GIMBAL_REPORT")
+
+    def handle_gimbal_device_attitude_status(self, msg):
+        # q 通常是 [w, x, y, z]。
+        q = getattr(msg, "q", None)
+        if q is None or len(q) < 4:
+            return
+        qw, qx, qy, qz = float(q[0]), float(q[1]), float(q[2]), float(q[3])
+        roll, pitch, yaw = quaternion_to_euler(qw, qx, qy, qz)
+        self._publish_gimbal_angle(
+            math.degrees(pitch),
+            math.degrees(roll),
+            math.degrees(yaw),
+            "GIMBAL_DEVICE_ATTITUDE_STATUS",
+        )
+
+    def _publish_gimbal_angle(self, pitch_deg: float, roll_deg: float, yaw_deg: float, source: str):
+        out = Vector3()
+        out.x = pitch_deg
+        out.y = roll_deg
+        out.z = yaw_deg
+        self.gimbal_angle_pub.publish(out)
+        if not self._gimbal_seen:
+            self._gimbal_seen = True
+            self.get_logger().info(f"Received gimbal angle from {source}")
 
     def publish_pose(self):
         pose = PoseStamped()
