@@ -22,6 +22,13 @@ def generate_launch_description():
     default_takeoff_alt = LaunchConfiguration("default_takeoff_alt")
     default_thrust = LaunchConfiguration("default_thrust")
     reconnect_timeout_s = LaunchConfiguration("reconnect_timeout_s")
+    digicam_command = LaunchConfiguration("digicam_command")
+    digicam_param5_trigger = LaunchConfiguration("digicam_param5_trigger")
+    screenshot_enable_save = LaunchConfiguration("screenshot_enable_save")
+    screenshot_image_topic = LaunchConfiguration("screenshot_image_topic")
+    screenshot_output_dir = LaunchConfiguration("screenshot_output_dir")
+    screenshot_filename_format = LaunchConfiguration("screenshot_filename_format")
+    screenshot_log_level = LaunchConfiguration("screenshot_log_level")
 
     return LaunchDescription(
         [
@@ -86,6 +93,41 @@ def generate_launch_description():
                 description="Default thrust for attitude control (0.0-1.0).",
             ),
             DeclareLaunchArgument(
+                "digicam_command",
+                default_value="203",
+                description="MAV_CMD_DO_DIGICAM_CONTROL command id (default 203).",
+            ),
+            DeclareLaunchArgument(
+                "digicam_param5_trigger",
+                default_value="1.0",
+                description="DIGICAM_CONTROL param5 shutter trigger (non-zero triggers).",
+            ),
+            DeclareLaunchArgument(
+                "screenshot_enable_save",
+                default_value="true",
+                description="Save latest image frame to disk on screenshot trigger.",
+            ),
+            DeclareLaunchArgument(
+                "screenshot_image_topic",
+                default_value="/world/iris_runway/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/image",
+                description="Image topic to sample when saving screenshots.",
+            ),
+            DeclareLaunchArgument(
+                "screenshot_output_dir",
+                default_value="~/uav_captures",
+                description="Directory to store captured screenshots.",
+            ),
+            DeclareLaunchArgument(
+                "screenshot_filename_format",
+                default_value="shot_%04d.jpg",
+                description="Filename format for saved screenshots (supports %d counter).",
+            ),
+            DeclareLaunchArgument(
+                "screenshot_log_level",
+                default_value="info",
+                description="Log level for mavlink_tx (e.g., debug/info/warn).",
+            ),
+            DeclareLaunchArgument(
                 "reconnect_timeout_s",
                 default_value="5.0",
                 description="Reconnect timeout in seconds for MAVLink RX.",
@@ -120,8 +162,15 @@ def generate_launch_description():
                     {"waypoint_relative_alt": waypoint_relative_alt},
                     {"default_takeoff_alt": default_takeoff_alt},
                     {"default_thrust": default_thrust},
+                    {"digicam_command": digicam_command},
+                    {"digicam_param5_trigger": digicam_param5_trigger},
+                    {"screenshot_enable_save": screenshot_enable_save},
+                    {"screenshot_image_topic": screenshot_image_topic},
+                    {"screenshot_output_dir": screenshot_output_dir},
+                    {"screenshot_filename_format": screenshot_filename_format},
                 ],
                 output="screen",
+                arguments=["--ros-args", "--log-level", screenshot_log_level],
             ),
             Node(
                 condition=IfCondition(enable_rqt),

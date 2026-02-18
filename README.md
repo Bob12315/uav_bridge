@@ -112,6 +112,7 @@ ros2 run uav_bridge mavlink_tx --ros-args -p mavlink_url:=udp:127.0.0.1:14551
 - `/uav/cmd/thrust` (std_msgs/Float32)               # 0.0-1.0
 - `/uav/cmd/rc_override` (std_msgs/UInt16MultiArray) # 8ch PWM, 1000-2000
 - `/uav/cmd/gimbal_target` (geometry_msgs/Vector3)   # pitch/roll/yaw (degrees)
+- `/uav/cmd/screenshot` (std_msgs/Empty)             # 触发一次相机快门（MAV_CMD_DO_DIGICAM_CONTROL）
 - `/uav/tx_error` (std_msgs/Bool)                    # 错误标志
 
 简单测试示例：
@@ -145,9 +146,36 @@ ros2 topic pub --once /uav/cmd/rc_override std_msgs/UInt16MultiArray \
 ros2 topic pub --once /uav/cmd/gimbal_target geometry_msgs/Vector3 \
   "{x: -10.0, y: 0.0, z: 0.0}"
 
+# 截图（一次快门，MAV_CMD_DO_DIGICAM_CONTROL）
+ros2 topic pub --once /uav/cmd/screenshot std_msgs/Empty "{}"
+
 # 降落
 ros2 topic pub --once /uav/cmd/land std_msgs/Empty "{}"
 ```
+
+### 截图命令（MAV_CMD_DO_DIGICAM_CONTROL）
+- `digicam_command`：默认 203
+- `digicam_param5_trigger`：默认 1.0（非零触发快门）
+- 其他 DIGICAM 参数默认 0（如需变焦/对焦可覆盖）
+
+### 截图自动保存（可选）
+- `screenshot_enable_save` (bool，默认 true)：触发截图时同时保存当前图像帧。
+- `screenshot_image_topic` (string，默认 `/world/iris_runway/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/image`)
+- `screenshot_output_dir` (string，默认 `~/uav_captures`，支持 `~` 展开)
+- `screenshot_filename_format` (string，默认 `shot_%04d.jpg`；若无 `%d`，在扩展名前插入 `_N`，如 `shot.jpg`→`shot_1.jpg`)
+- `screenshot_log_level` (string，默认 `info`)
+- 编码支持：`rgb8` / `bgr8` / `mono8`；安装 Pillow 时按扩展名保存，否则回退为 PPM/PGM。未收到图像或编码不支持会警告但仍发送 MAVLink 快门。
+
+单节点运行示例：
+```bash
+ros2 run uav_bridge mavlink_tx --ros-args \
+  -p screenshot_enable_save:=true \
+  -p screenshot_image_topic:=/world/iris_runway/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/image \
+  -p screenshot_output_dir:=~/uav_captures \
+  -p screenshot_filename_format:=shot_%04d.jpg \
+  --log-level mavlink_tx:=info
+```
+触发：`ros2 topic pub --once /uav/cmd/screenshot std_msgs/Empty "{}"`，文件写入 `screenshot_output_dir`。
 
 ## 组合启动（相机 + RX/TX）
 ```bash
@@ -162,7 +190,12 @@ ros2 launch uav_bridge camera_mavlink.launch.py \
   enable_image:=true \
   enable_rx:=true \
   enable_tx:=true \
-  enable_rqt:=false
+  enable_rqt:=false \
+  screenshot_enable_save:=true \
+  screenshot_image_topic:=/world/iris_runway/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/image \
+  screenshot_output_dir:=~/uav_captures \
+  screenshot_filename_format:=shot_%04d.jpg \
+  screenshot_log_level:=info
 ```
 
 ## MAVLink 原始数据打印

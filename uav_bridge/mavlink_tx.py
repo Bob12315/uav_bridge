@@ -23,13 +23,19 @@ Notes:
 """
 
 import math
+from pathlib import Path
 
 import rclpy
 from rclpy.node import Node
 
 from std_msgs.msg import Bool, String, Float32, Empty, UInt16MultiArray
 from geometry_msgs.msg import TwistStamped, QuaternionStamped, Vector3, Twist
-from sensor_msgs.msg import NavSatFix
+from sensor_msgs.msg import NavSatFix, Image
+
+try:
+    from PIL import Image as PILImage  # Optional: enables JPEG/PNG saving
+except ImportError:  # pragma: no cover - optional dependency
+    PILImage = None
 
 from pymavlink import mavutil
 
@@ -48,6 +54,15 @@ class MavlinkTxNode(Node):
         self.declare_parameter("default_takeoff_alt", 5.0)
         self.declare_parameter("default_thrust", 0.5)
         self.declare_parameter("gimbal_mount_mode", 2)
+        self.declare_parameter("digicam_command", int(mavutil.mavlink.MAV_CMD_DO_DIGICAM_CONTROL))
+        self.declare_parameter("digicam_param5_trigger", 1.0)
+        self.declare_parameter("screenshot_enable_save", True)
+        self.declare_parameter(
+            "screenshot_image_topic",
+            "/world/iris_runway/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/image",
+        )
+        self.declare_parameter("screenshot_output_dir", "~/uav_captures")
+        self.declare_parameter("screenshot_filename_format", "shot_%04d.jpg")
 
         mavlink_url = (
             self.get_parameter("mavlink_url")
@@ -74,6 +89,40 @@ class MavlinkTxNode(Node):
             .get_parameter_value()
             .integer_value
         )
+        self._digicam_command = int(
+            self.get_parameter("digicam_command")
+            .get_parameter_value()
+            .integer_value
+        )
+        self._digicam_trigger = (
+            self.get_parameter("digicam_param5_trigger")
+            .get_parameter_value()
+            .double_value
+        )
+        self._screenshot_enable_save = (
+            self.get_parameter("screenshot_enable_save")
+            .get_parameter_value()
+            .bool_value
+        )
+        self._screenshot_image_topic = (
+            self.get_parameter("screenshot_image_topic")
+            .get_parameter_value()
+            .string_value
+        )
+        self._screenshot_output_dir = Path(
+            self.get_parameter("screenshot_output_dir")
+            .get_parameter_value()
+            .string_value
+        ).expanduser()
+        self._screenshot_filename_format = (
+            self.get_parameter("screenshot_filename_format")
+            .get_parameter_value()
+            .string_value
+        )
+
+        # Screenshot cache/counter
+        self._latest_image = None
+        self._shot_counter = 1
 
         # 对外暴露的发送异常标志，便于上层节点做降级处理。
         self._error_flag = False
@@ -106,6 +155,9 @@ class MavlinkTxNode(Node):
         self.create_subscription(Vector3, "uav/cmd/move_relative", self.on_move_relative, 10)
         self.create_subscription(Twist, "uav/cmd/move_relative_yaw", self.on_move_relative_yaw, 10)
         self.create_subscription(Vector3, "uav/cmd/gimbal_target", self.on_gimbal_target, 10)
+        self.create_subscription(Empty, "uav/cmd/screenshot", self.on_screenshot, 10)
+        if self._screenshot_enable_save:
+            self.create_subscription(Image, self._screenshot_image_topic, self.on_image, 5)
 
         # TODO: placeholders for future command topics (keep for later extension).
         # self.create_subscription(..., "uav/cmd/mission", self.on_mission, 10)
@@ -349,6 +401,102 @@ class MavlinkTxNode(Node):
             )
         except Exception as exc:
             self._set_error(True, f"DO_MOUNT_CONTROL failed: {exc}")
+
+    def on_screenshot(self, _msg: Empty):
+        # 触发一次相机快门（DIGICAM_CONTROL，param5=trigger）。
+        self._send_command_long(
+            self._digicam_command,
+            [0.0, 0.0, 0.0, 0.0, float(self._digicam_trigger), 0.0, 0.0],
+        )
+        if self._screenshot_enable_save:
+            self._save_latest_image()
+
+    def on_image(self, msg: Image):
+        # 缓存最新图像，用于截帧保存。
+        self._latest_image = msg
+
+    def _save_latest_image(self):
+        if self._latest_image is None:
+            self.get_logger().warn("Screenshot requested but no image received yet")
+            return
+        msg = self._latest_image
+        encoding = msg.encoding.lower()
+
+        try:
+            self._screenshot_output_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:  # pragma: no cover - filesystem specific
+            self._set_error(True, f"Create dir failed: {exc}")
+            return
+
+        idx = self._shot_counter
+        self._shot_counter += 1
+
+        fmt = self._screenshot_filename_format
+        if "%d" in fmt:
+            name = fmt % idx
+        else:
+            fmt_path = Path(fmt)
+            suffix = fmt_path.suffix
+            stem = fmt_path.stem or "shot"
+            name = f"{stem}_{idx}{suffix}"
+        out_path = self._screenshot_output_dir / name
+
+        # Determine save method
+        try:
+            if PILImage is not None:
+                pil_img = self._image_to_pillow(msg, encoding)
+                pil_img.save(out_path)
+            else:
+                # Fallback to raw PPM/PGM
+                out_path = self._save_raw_ppm(msg, encoding, out_path)
+            self.get_logger().info(f"Screenshot saved: {out_path}")
+        except ValueError as exc:
+            # Unsupported encoding
+            self.get_logger().warn(f"Screenshot skipped: {exc}")
+        except Exception as exc:  # pragma: no cover - I/O errors
+            self._set_error(True, f"Save screenshot failed: {exc}")
+
+    def _image_to_pillow(self, msg: Image, encoding: str):
+        width = int(msg.width)
+        height = int(msg.height)
+        data = bytes(msg.data)
+        if encoding == "rgb8":
+            return PILImage.frombytes("RGB", (width, height), data)
+        if encoding == "bgr8":
+            return PILImage.frombytes("RGB", (width, height), data, "raw", "BGR")
+        if encoding == "mono8":
+            return PILImage.frombytes("L", (width, height), data)
+        raise ValueError(f"Unsupported image encoding: {encoding}")
+
+    def _save_raw_ppm(self, msg: Image, encoding: str, out_path: Path) -> Path:
+        width = int(msg.width)
+        height = int(msg.height)
+        data = bytes(msg.data)
+
+        if encoding == "rgb8":
+            header = f"P6\n{width} {height}\n255\n".encode()
+            out_bytes = header + data
+        elif encoding == "bgr8":
+            # Convert BGR to RGB without external deps.
+            rgb = bytearray(len(data))
+            for i in range(0, len(data), 3):
+                rgb[i] = data[i + 2]
+                rgb[i + 1] = data[i + 1]
+                rgb[i + 2] = data[i]
+            header = f"P6\n{width} {height}\n255\n".encode()
+            out_bytes = header + bytes(rgb)
+        elif encoding == "mono8":
+            header = f"P5\n{width} {height}\n255\n".encode()
+            out_bytes = header + data
+        else:
+            raise ValueError(f"Unsupported image encoding: {encoding}")
+
+        # Ensure extension matches raw format if original was jpg-like
+        if out_path.suffix.lower() not in {".ppm", ".pgm"}:
+            out_path = out_path.with_suffix(".ppm" if encoding != "mono8" else ".pgm")
+        with open(out_path, "wb") as f:
+            f.write(out_bytes)
+        return out_path
 
     def _send_move_relative_body(self, x_body: float, y_body: float, z_body: float):
         if not self._ensure_master():
