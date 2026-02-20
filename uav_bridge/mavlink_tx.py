@@ -39,6 +39,8 @@ except ImportError:  # pragma: no cover - optional dependency
 
 from pymavlink import mavutil
 
+from uav_bridge.compat import get_compat
+
 
 def clamp(val: float, lo: float, hi: float) -> float:
     """限幅工具：把 val 约束到 [lo, hi]。"""
@@ -49,20 +51,22 @@ class MavlinkTxNode(Node):
     def __init__(self):
         super().__init__("mavlink_tx")
 
-        self.declare_parameter("mavlink_url", "udp:127.0.0.1:14540")
-        self.declare_parameter("waypoint_relative_alt", True)
-        self.declare_parameter("default_takeoff_alt", 5.0)
-        self.declare_parameter("default_thrust", 0.5)
-        self.declare_parameter("gimbal_mount_mode", 2)
-        self.declare_parameter("digicam_command", int(mavutil.mavlink.MAV_CMD_DO_DIGICAM_CONTROL))
-        self.declare_parameter("digicam_param5_trigger", 1.0)
-        self.declare_parameter("screenshot_enable_save", True)
+        self._compat = get_compat()
+
+        d = self._compat.node_parameters_defaults
+        self.declare_parameter("mavlink_url", d["mavlink_url"])
+        self.declare_parameter("waypoint_relative_alt", d["waypoint_relative_alt"])
+        self.declare_parameter("default_takeoff_alt", d["default_takeoff_alt"])
+        self.declare_parameter("default_thrust", d["default_thrust"])
+        self.declare_parameter("gimbal_mount_mode", d["gimbal_mount_mode"])
         self.declare_parameter(
-            "screenshot_image_topic",
-            "/world/iris_runway/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/image",
+            "digicam_command", int(d["digicam_command"])
         )
-        self.declare_parameter("screenshot_output_dir", "~/uav_captures")
-        self.declare_parameter("screenshot_filename_format", "shot_%04d.jpg")
+        self.declare_parameter("digicam_param5_trigger", d["digicam_param5_trigger"])
+        self.declare_parameter("screenshot_enable_save", d["screenshot_enable_save"])
+        self.declare_parameter("screenshot_image_topic", d["screenshot_image_topic"])
+        self.declare_parameter("screenshot_output_dir", d["screenshot_output_dir"])
+        self.declare_parameter("screenshot_filename_format", d["screenshot_filename_format"])
 
         mavlink_url = (
             self.get_parameter("mavlink_url")
@@ -126,21 +130,21 @@ class MavlinkTxNode(Node):
 
         # 对外暴露的发送异常标志，便于上层节点做降级处理。
         self._error_flag = False
-        self._error_pub = self.create_publisher(Bool, "uav/tx_error", 10)
+        self._error_pub = self.create_publisher(Bool, "uav/tx_error", self._compat.qos_profile_cmd)
 
-        self.get_logger().info(f"Connecting to MAVLink at {mavlink_url}")
+        self.get_logger().info(f"[{self._compat.name}] Connecting to MAVLink at {mavlink_url}")
         try:
             self.master = mavutil.mavlink_connection(mavlink_url)
             self.master.wait_heartbeat(timeout=10)
             self.get_logger().info(
-                f"Heartbeat from system (system {self.master.target_system}, "
+                f"[{self._compat.name}] Heartbeat from system (system {self.master.target_system}, "
                 f"component {self.master.target_component})"
             )
             self._mode_mapping = self.master.mode_mapping() or {}
         except Exception as exc:
             self.master = None
             self._mode_mapping = {}
-            self._set_error(True, f"MAVLink connect failed: {exc}")
+            self._set_error(True, f"[{self._compat.name}] MAVLink connect failed: {exc}")
 
         # command subscriptions
         self.create_subscription(Bool, "uav/cmd/arm", self.on_arm, 10)
@@ -157,7 +161,16 @@ class MavlinkTxNode(Node):
         self.create_subscription(Vector3, "uav/cmd/gimbal_target", self.on_gimbal_target, 10)
         self.create_subscription(Empty, "uav/cmd/screenshot", self.on_screenshot, 10)
         if self._screenshot_enable_save:
-            self.create_subscription(Image, self._screenshot_image_topic, self.on_image, 5)
+            self.create_subscription(
+                Image,
+                self._screenshot_image_topic,
+                self.on_image,
+                self._compat.qos_profile_sensor,
+            )
+            if not self._compat.pil_supported or PILImage is None:
+                self.get_logger().info(
+                    "Pillow not available; screenshots will be saved as PPM/PGM."
+                )
 
         # TODO: placeholders for future command topics (keep for later extension).
         # self.create_subscription(..., "uav/cmd/mission", self.on_mission, 10)
@@ -443,16 +456,20 @@ class MavlinkTxNode(Node):
 
         # Determine save method
         try:
-            if PILImage is not None:
+            if self._compat.pil_supported and PILImage is not None:
                 pil_img = self._image_to_pillow(msg, encoding)
                 pil_img.save(out_path)
             else:
                 # Fallback to raw PPM/PGM
                 out_path = self._save_raw_ppm(msg, encoding, out_path)
-            self.get_logger().info(f"Screenshot saved: {out_path}")
+            self.get_logger().info(
+                f"Screenshot saved: {out_path} (encoding={encoding}, pil={self._compat.pil_supported})"
+            )
         except ValueError as exc:
             # Unsupported encoding
-            self.get_logger().warn(f"Screenshot skipped: {exc}")
+            self.get_logger().warn(
+                f"Screenshot skipped: {exc}. Supported: rgb8/bgr8/mono8."
+            )
         except Exception as exc:  # pragma: no cover - I/O errors
             self._set_error(True, f"Save screenshot failed: {exc}")
 

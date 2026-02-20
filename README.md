@@ -1,121 +1,76 @@
 # uav_bridge
 
-ROS 2 + MAVLink 工具集（通用），提供 MAVLink 遥测接入与控制发送节点。
+ROS 2 ↔︎ MAVLink 工具集，包含遥测接入、指令发送、相机桥接与调试打印，面向 ArduPilot/PX4/SITL。
 
-## 组件
-- `mavlink_bridge`：MAVLink 遥测 → ROS 2 话题（pose/odom/battery/云台角度等）
-- `mavlink_tx`：ROS 2 指令 → MAVLink 控制（只发送）
-- `mavlink_dump`：打印原始 MAVLink 消息，便于调试
-- `camera_mavlink.launch.py`：可选的相机桥 + MAVLink RX/TX 组合启动
+## 兼容性矩阵
+- ROS 2：Foxy (20.04) / Humble (22.04) / Jazzy (24.04)
+- Python：3.8–3.12
+- 可选依赖：Pillow（截图保存 JPEG/PNG），缺失时自动回退 PPM/PGM；`ros_gz_image`、`rqt_image_view` 缺失不影响核心 RX/TX。
+- 启动文件自动根据 `ROS_DISTRO` 选择默认值；Foxy 不附加 `--ros-args --log-level`。
 
-## 依赖
-- ROS 2（Humble 或兼容版本）
-- pymavlink
-- （可选）ros_gz_image、rqt_image_view
+## 组件概览
+- `mavlink_bridge`：MAVLink 遥测 → ROS 2 话题（姿态/位置/电池/云台）。
+- `mavlink_tx`：ROS 2 指令 → MAVLink 控制（仅发送）。
+- `mavlink_dump`：原始 MAVLink 消息打印，便于抓包/调试。
+- `camera_mavlink.launch.py`：相机桥 + MAVLink RX/TX 一键组合启动。
 
-### 推荐安装（Ubuntu 22.04）
+## 安装与构建
 ```bash
 sudo apt-get update
-sudo apt-get install -y \
-  ros-humble-ros-gzharmonic \
-  ros-humble-rqt \
-  ros-humble-rqt-image-view \
-  ros-humble-topic-tools
+# 按需安装 ROS 发行版 (Foxy/Humble/Jazzy)
+sudo apt-get install -y ros-${ROS_DISTRO}-topic-tools ros-${ROS_DISTRO}-rqt ros-${ROS_DISTRO}-rqt-image-view ros-${ROS_DISTRO}-ros-gzharmonic || true
 
 pip install --upgrade pip
-pip install pymavlink
+pip install pymavlink Pillow  # Pillow 可选
 
-python3 -c "import pymavlink; print(pymavlink.__version__)"
-
-```
-
-## 编译
-```bash
-cd $HOME/ros2_ws
+cd ~/ros2_ws
 colcon build --packages-select uav_bridge
 source install/setup.bash
 ```
 
-```
---out=udp:127.0.0.1:14540   # 给 ROS RX
---out=udp:127.0.0.1:14550   # 给 QGC
---out=udp:127.0.0.1:14551   # 给 ROS TX
-```
+## 快速开始
+- 遥测 RX：`ros2 run uav_bridge mavlink_bridge --ros-args -p mavlink_url:=udp:127.0.0.1:14540`
+- 指令 TX：`ros2 run uav_bridge mavlink_tx --ros-args -p mavlink_url:=udp:127.0.0.1:14551`
+- 组合启动：`ros2 launch uav_bridge camera_mavlink.launch.py`
 
-## 运行示例
-```bash
-gz sim -v4 -r iris_runway.sdf
-```
-```bash
-sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON --console --add-param-file=$HOME/gz_ws/src/ardupilot_gazebo/config/gazebo-iris-gimbal.parm --out=udp:127.0.0.1:14540 --out=udp:127.0.0.1:14550 --out=udp:127.0.0.1:14551 
-```
+## 参数（精选）
+`mavlink_tx`：
+- `mavlink_url`：默认 `udp:127.0.0.1:14551`
+- `waypoint_relative_alt`：`true` 使用相对高度
+- `default_takeoff_alt`：默认 5.0 m
+- `default_thrust`：默认 0.5（0–1）
+- 截图：`screenshot_enable_save` / `screenshot_image_topic` / `screenshot_output_dir` / `screenshot_filename_format`
 
-## 相机桥（Gazebo → ROS 2，单独启动）
-```bash
-ros2 run ros_gz_image image_bridge \
-  /world/iris_runway/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/image \
-  /uav/camera/image \
-  --ros-args -p qos:=sensor_data -p lazy:=false
-```
+`mavlink_bridge`：
+- `mavlink_url`：默认 `udp:127.0.0.1:14540`
+- `reconnect_timeout_s`：自动重连超时（如需在 Launch 中设置）
 
-## MAVLink 遥测（RX）
-```bash
-ros2 run uav_bridge mavlink_bridge --ros-args -p mavlink_url:=udp:127.0.0.1:14540
-```
+## 话题
+指令输入（TX）：
+- `/uav/cmd/arm` (Bool) 解锁/加锁
+- `/uav/cmd/mode` (String) 飞控模式
+- `/uav/cmd/takeoff` (Float32) 起飞高度
+- `/uav/cmd/land` (Empty) 立即降落
+- `/uav/cmd/velocity` (TwistStamped) ENU 速度 + yaw_rate
+- `/uav/cmd/move_relative` (Vector3) 机体系位移 (x右,y前,z上)
+- `/uav/cmd/move_relative_yaw` (Twist) 机体系位移 + 相对偏航(rad)
+- `/uav/cmd/waypoint` (NavSatFix) 经纬高
+- `/uav/cmd/attitude` (QuaternionStamped)
+- `/uav/cmd/thrust` (Float32) 0–1
+- `/uav/cmd/rc_override` (UInt16MultiArray) 8 通道 PWM
+- `/uav/cmd/gimbal_target` (Vector3) pitch/roll/yaw (deg)
+- `/uav/cmd/screenshot` (Empty) 触发快门
+- `/uav/tx_error` (Bool) 发送异常标志
 
-### mavlink_bridge 详细说明
+遥测输出（RX）：
+- `/uav/pose` (PoseStamped) / `/uav/odom` (Odometry)
+- `/uav/navsatfix` (NavSatFix)
+- `/uav/battery` (BatteryState)
+- `/uav/mode` (String) / `/uav/armed` (Bool) / `/uav/system_status` (UInt8)
+- `/uav/gimbal/angle` (Vector3)
 
-用途：订阅 MAVLink 遥测消息并发布为 ROS 2 话题。目前解析 HEARTBEAT / GLOBAL_POSITION_INT / ATTITUDE / BATTERY_STATUS / SYS_STATUS / MOUNT_STATUS / GIMBAL_REPORT / GIMBAL_DEVICE_ATTITUDE_STATUS。
 
-参数：
-- `mavlink_url`：MAVLink 连接地址（默认 `udp:127.0.0.1:14540`）。
-
-发布话题：
-- `/uav/mode` (std_msgs/String)
-- `/uav/armed` (std_msgs/Bool)
-- `/uav/system_status` (std_msgs/UInt8)
-- `/uav/navsatfix` (sensor_msgs/NavSatFix)
-- `/uav/pose` (geometry_msgs/PoseStamped)
-- `/uav/odom` (nav_msgs/Odometry)
-- `/uav/battery` (sensor_msgs/BatteryState)
-- `/uav/gimbal/angle` (geometry_msgs/Vector3)  # pitch/roll/yaw (degrees, from MOUNT_STATUS/GIMBAL_REPORT/GIMBAL_DEVICE_ATTITUDE_STATUS)
-
-坐标/数据约定：
-- ENU 原点：第一次收到有效 `GLOBAL_POSITION_INT` 时锁定 (lat0, lon0, alt0)。
-- 位置：`/uav/pose` 与 `/uav/odom` 的 position 为 ENU (meters)。
-- 速度：来自 `GLOBAL_POSITION_INT.vx/vy/vz`（NED, cm/s），转换为 ENU (m/s) 写入 `odom.twist.twist.linear`。
-- 姿态：使用 `ATTITUDE` 的 roll/pitch/yaw 转为四元数发布到 `/uav/pose` 和 `/uav/odom`。
-- 角速度：使用 `ATTITUDE.rollspeed/pitchspeed/yawspeed` 写入 `odom.twist.twist.angular`。
-
-电池：
-- 优先解析 `BATTERY_STATUS`，若无则解析 `SYS_STATUS`，并统一发布到 `/uav/battery`。
-
-注意：
-- 若 MAVLink 无心跳或连接失败，节点会在启动阶段报错并退出。
-- 若 GPS 未锁定，ENU 原点可能在非预期位置，必要时请改为使用 `GPS_RAW_INT` 或加入 fix_type 判断。
-
-## MAVLink 控制（TX，仅发送）
-```bash
-ros2 run uav_bridge mavlink_tx --ros-args -p mavlink_url:=udp:127.0.0.1:14551
-```
-
-指令话题（可按需改名）：
-- `/uav/cmd/arm` (std_msgs/Bool)
-- `/uav/cmd/mode` (std_msgs/String)
-- `/uav/cmd/takeoff` (std_msgs/Float32)
-- `/uav/cmd/land` (std_msgs/Empty)
-- `/uav/cmd/velocity` (geometry_msgs/TwistStamped)  # ENU m/s, yaw_rate=angular.z
-- `/uav/cmd/move_relative` (geometry_msgs/Vector3)   # 机体坐标相对位移，单位 m（x右, y前, z上）
-- `/uav/cmd/move_relative_yaw` (geometry_msgs/Twist) # 机体相对位移 + 相对偏航（linear: m, angular.z: rad）
-- `/uav/cmd/waypoint` (sensor_msgs/NavSatFix)        # lat/lon/alt
-- `/uav/cmd/attitude` (geometry_msgs/QuaternionStamped)
-- `/uav/cmd/thrust` (std_msgs/Float32)               # 0.0-1.0
-- `/uav/cmd/rc_override` (std_msgs/UInt16MultiArray) # 8ch PWM, 1000-2000
-- `/uav/cmd/gimbal_target` (geometry_msgs/Vector3)   # pitch/roll/yaw (degrees)
-- `/uav/cmd/screenshot` (std_msgs/Empty)             # 触发一次相机快门（MAV_CMD_DO_DIGICAM_CONTROL）
-- `/uav/tx_error` (std_msgs/Bool)                    # 错误标志
-
-简单测试示例：
+指令示例（TX，按需修改话题名/数值）：
 ```bash
 # 解锁
 ros2 topic pub --once /uav/cmd/arm std_msgs/Bool "{data: true}"
@@ -130,7 +85,7 @@ ros2 topic pub --once /uav/cmd/takeoff std_msgs/Float32 "{data: 5.0}"
 ros2 topic pub --rate 10 /uav/cmd/velocity geometry_msgs/TwistStamped \
   "{twist: {linear: {x: 1.0, y: 0.0, z: 0.0}, angular: {z: 0.2}}}"
 
-# 机体系相对位移 + 相对偏航（x右, y前, z上；angular.z 单位 rad，示例为 +30deg）
+# 机体系相对位移 + 相对偏航（x右, y前, z上；angular.z 单位 rad，示例 +30deg）
 ros2 topic pub --once /uav/cmd/move_relative_yaw geometry_msgs/Twist \
   "{linear: {x: 0.0, y: 2.0, z: 0.0}, angular: {z: 0.5236}}"
 
@@ -153,59 +108,49 @@ ros2 topic pub --once /uav/cmd/screenshot std_msgs/Empty "{}"
 ros2 topic pub --once /uav/cmd/land std_msgs/Empty "{}"
 ```
 
-### 截图命令（MAV_CMD_DO_DIGICAM_CONTROL）
-- `digicam_command`：默认 203
-- `digicam_param5_trigger`：默认 1.0（非零触发快门）
-- 其他 DIGICAM 参数默认 0（如需变焦/对焦可覆盖）
+## 截图保存
+- 命令 `MAV_CMD_DO_DIGICAM_CONTROL`，`digicam_param5_trigger=1.0` 触发。
+- 有 Pillow：按文件扩展名保存（JPEG/PNG）。无 Pillow：自动 PPM/PGM，日志提示一次。
+- 文件名支持 `%d` 计数；未提供则自动在扩展名前加 `_N`。
 
-### 截图自动保存（可选）
-- `screenshot_enable_save` (bool，默认 true)：触发截图时同时保存当前图像帧。
-- `screenshot_image_topic` (string，默认 `/world/iris_runway/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/image`)
-- `screenshot_output_dir` (string，默认 `~/uav_captures`，支持 `~` 展开)
-- `screenshot_filename_format` (string，默认 `shot_%04d.jpg`；若无 `%d`，在扩展名前插入 `_N`，如 `shot.jpg`→`shot_1.jpg`)
-- `screenshot_log_level` (string，默认 `info`)
-- 编码支持：`rgb8` / `bgr8` / `mono8`；安装 Pillow 时按扩展名保存，否则回退为 PPM/PGM。未收到图像或编码不支持会警告但仍发送 MAVLink 快门。
+## 坐标与控制约定
+- 输入速度为 ENU，发送前转换为 MAVLink LOCAL_NED。
+- `move_relative*` 使用机体系 (x右,y前,z上)，下发 `MAV_FRAME_BODY_OFFSET_NED`；默认保持当前偏航（yaw_rate=0）。相对偏航通过 `MAV_CMD_CONDITION_YAW`，正值顺时针。
+- ENU 原点在首次有效 `GLOBAL_POSITION_INT` 时锁定。
 
-单节点运行示例：
-```bash
-ros2 run uav_bridge mavlink_tx --ros-args \
-  -p screenshot_enable_save:=true \
-  -p screenshot_image_topic:=/world/iris_runway/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/image \
-  -p screenshot_output_dir:=~/uav_captures \
-  -p screenshot_filename_format:=shot_%04d.jpg \
-  --log-level mavlink_tx:=info
-```
-触发：`ros2 topic pub --once /uav/cmd/screenshot std_msgs/Empty "{}"`，文件写入 `screenshot_output_dir`。
+## 调试与示例
+- 原始 MAVLink 打印：`ros2 run uav_bridge mavlink_dump -- --duration 5 --types HEARTBEAT,ATTITUDE`
+- 典型 SITL 流程：
+  ```bash
+  gz sim -v4 -r iris_runway.sdf
+  sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON --console \
+    --add-param-file=$HOME/gz_ws/src/ardupilot_gazebo/config/gazebo-iris-gimbal.parm \
+    --out=udp:127.0.0.1:14540 --out=udp:127.0.0.1:14550 --out=udp:127.0.0.1:14551
+  ```
 
-## 组合启动（相机 + RX/TX）
-```bash
-ros2 launch uav_bridge camera_mavlink.launch.py
-```
+常见提示：
+- Foxy 缺少 GUI/桥接包可忽略；核心 RX/TX 不受影响。
+- RC override 需持续发送保持；单次发送会在几秒后失效。
 
-可选参数：
-```bash
-ros2 launch uav_bridge camera_mavlink.launch.py \
-  mavlink_url_rx:=udpin:0.0.0.0:14540 \
-  mavlink_url_tx:=udp:127.0.0.1:14551 \
-  enable_image:=true \
-  enable_rx:=true \
-  enable_tx:=true \
-  enable_rqt:=false \
-  screenshot_enable_save:=true \
-  screenshot_image_topic:=/world/iris_runway/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/image \
-  screenshot_output_dir:=~/uav_captures \
-  screenshot_filename_format:=shot_%04d.jpg \
-  screenshot_log_level:=info
-```
+## Launch 可配置参数（常用）
+`mavlink_tx.launch.py`：
+- `mavlink_url` (默认 `udp:127.0.0.1:14551`)
+- `waypoint_relative_alt` (`true`)
+- `default_takeoff_alt` (`5.0`)
+- `default_thrust` (`0.5`)
 
-## MAVLink 原始数据打印
-```bash
-ros2 run uav_bridge mavlink_dump
-ros2 run uav_bridge mavlink_dump -- --duration 5 --types HEARTBEAT,ATTITUDE
-```
-
-## 备注
-- RC override 需要持续发送才能保持（单次发送会在几秒后失效）。
-- 坐标系约定：速度指令使用 ENU；MAVLink 下发时转换为 NED。
-- `move_relative` / `move_relative_yaw` 使用机体系位移（x右, y前, z上），内部按 `MAV_FRAME_BODY_OFFSET_NED` 下发。
-- `move_relative_yaw` 的 `angular.z` 为相对偏航（rad）；当前实现转换为 `MAV_CMD_CONDITION_YAW`（正值顺时针）。
+`camera_mavlink.launch.py`：
+- `enable_image` (`true`)
+- `gz_image_topic` (默认 Gazebo 相机话题)
+- `ros_image_topic` (默认同上，可改为 `/uav/camera/image`)
+- `mavlink_url_rx` (`udpin:0.0.0.0:14540`)
+- `mavlink_url_tx` (`udp:127.0.0.1:14551`)
+- `enable_rqt` (`true`) / `rqt_image_topic`
+- `enable_rx` (`true`) / `enable_tx` (`true`)
+- `waypoint_relative_alt` / `default_takeoff_alt` / `default_thrust`
+- `digicam_command` (`203`) / `digicam_param5_trigger` (`1.0`)
+- `screenshot_enable_save` (`true`)
+- `screenshot_image_topic` (默认桥接后的 Gazebo 相机话题)
+- `screenshot_output_dir` (`~/uav_captures`)
+- `screenshot_filename_format` (`shot_%04d.jpg`)
+- `screenshot_log_level` (`info`)

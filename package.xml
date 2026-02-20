@@ -17,6 +17,9 @@
   <exec_depend>pymavlink</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
+  <!-- Optional visualization / image bridge; tolerate missing on Foxy/Humble/Jazzy -->
+  <exec_depend>ros_gz_image</exec_depend>
+  <exec_depend>rqt_image_view</exec_depend>
 
 
   <export>
