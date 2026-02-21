@@ -24,11 +24,15 @@ class Compat:
     pil_supported: bool
 
 
-def _make_qos(depth: int) -> QoSProfile:
+def _make_qos(depth: int, *, reliable: bool) -> QoSProfile:
     return QoSProfile(
         depth=depth,
         history=QoSHistoryPolicy.KEEP_LAST,
-        reliability=QoSReliabilityPolicy.RELIABLE,
+        reliability=(
+            QoSReliabilityPolicy.RELIABLE
+            if reliable
+            else QoSReliabilityPolicy.BEST_EFFORT
+        ),
         durability=QoSDurabilityPolicy.VOLATILE,
     )
 
@@ -91,8 +95,8 @@ def get_compat() -> Compat:
     if distro == "foxy":
         return Compat(
             name="foxy",
-            qos_profile_sensor=_make_qos(5),
-            qos_profile_cmd=_make_qos(10),
+            qos_profile_sensor=_make_qos(5, reliable=False),
+            qos_profile_cmd=_make_qos(10, reliable=True),
             image_sub_depth=5,
             node_parameters_defaults=node_defaults,
             launch_defaults=launch_defaults,
@@ -102,8 +106,8 @@ def get_compat() -> Compat:
     if distro == "jazzy":
         return Compat(
             name="jazzy",
-            qos_profile_sensor=_make_qos(10),
-            qos_profile_cmd=_make_qos(10),
+            qos_profile_sensor=_make_qos(10, reliable=False),
+            qos_profile_cmd=_make_qos(10, reliable=True),
             image_sub_depth=10,
             node_parameters_defaults=node_defaults,
             launch_defaults=launch_defaults,
@@ -113,8 +117,8 @@ def get_compat() -> Compat:
     # Default to Humble settings for unknown/empty distro
     return Compat(
         name="humble" if distro == "humble" else distro or "unknown",
-        qos_profile_sensor=_make_qos(10),
-        qos_profile_cmd=_make_qos(10),
+        qos_profile_sensor=_make_qos(10, reliable=False),
+        qos_profile_cmd=_make_qos(10, reliable=True),
         image_sub_depth=10,
         node_parameters_defaults=node_defaults,
         launch_defaults=launch_defaults,
