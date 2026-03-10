@@ -23,6 +23,8 @@ Notes:
 """
 
 import math
+import inspect
+import re
 from pathlib import Path
 
 import rclpy
@@ -145,6 +147,15 @@ class MavlinkTxNode(Node):
             self.master = None
             self._mode_mapping = {}
             self._set_error(True, f"[{self._compat.name}] MAVLink connect failed: {exc}")
+
+        # RC override: ROS 输入按 12 通道处理；底层发送能力按 pymavlink 运行时探测。
+        self._rc_override_input_channels = 12
+        self._rc_override_send_channels = self._detect_rc_override_send_channels()
+        if self._rc_override_send_channels < self._rc_override_input_channels:
+            self.get_logger().warn(
+                f"RC override send supports only {self._rc_override_send_channels} channels; "
+                f"input keeps {self._rc_override_input_channels}, extra channels will be ignored."
+            )
 
         # command subscriptions
         self.create_subscription(Bool, "uav/cmd/arm", self.on_arm, 10)
@@ -361,35 +372,68 @@ class MavlinkTxNode(Node):
         if not msg.data:
             return
 
-        # ArduPilot/PX4 经典 RC_OVERRIDE 为 8 通道；0xFFFF 表示“忽略该通道”。
-        channels = [0xFFFF] * 8
-        for i in range(min(8, len(msg.data))):
+        # 约定输入范围：最多 12 通道；0/0xFFFF 表示“不覆盖该通道”。
+        if len(msg.data) > self._rc_override_input_channels:
+            self.get_logger().warn(
+                f"RC override got {len(msg.data)} channels, only first "
+                f"{self._rc_override_input_channels} will be used"
+            )
+
+        normalized_channels = [0xFFFF] * self._rc_override_input_channels
+        for i in range(min(self._rc_override_input_channels, len(msg.data))):
             val = int(msg.data[i])
             if val in (0, 0xFFFF):
-                channels[i] = 0xFFFF
+                normalized_channels[i] = 0xFFFF
                 continue
             if val < 1000 or val > 2000:
                 self.get_logger().warn(
                     f"RC channel {i+1} out of range ({val}), clamped to 1000-2000"
                 )
                 val = max(1000, min(2000, val))
-            channels[i] = val
+            normalized_channels[i] = val
+
+        send_channels = normalized_channels[: self._rc_override_send_channels]
+        if self._rc_override_send_channels < self._rc_override_input_channels:
+            has_extra_override = any(
+                ch != 0xFFFF
+                for ch in normalized_channels[self._rc_override_send_channels:self._rc_override_input_channels]
+            )
+            if has_extra_override:
+                self.get_logger().warn(
+                    f"RC channels {self._rc_override_send_channels + 1}-"
+                    f"{self._rc_override_input_channels} are not supported by current pymavlink "
+                    "and were ignored"
+                )
 
         try:
-            self.master.mav.rc_channels_override_send(
-                self.master.target_system,
-                self.master.target_component,
-                channels[0],
-                channels[1],
-                channels[2],
-                channels[3],
-                channels[4],
-                channels[5],
-                channels[6],
-                channels[7],
-            )
+            kwargs = {
+                "target_system": self.master.target_system,
+                "target_component": self.master.target_component,
+            }
+            for i, channel in enumerate(send_channels, start=1):
+                kwargs[f"chan{i}_raw"] = channel
+            self.master.mav.rc_channels_override_send(**kwargs)
         except Exception as exc:
             self._set_error(True, f"RC_CHANNELS_OVERRIDE failed: {exc}")
+
+    def _detect_rc_override_send_channels(self) -> int:
+        # 按 rc_channels_override_send 的参数名探测通道能力（兼容不同 pymavlink 版本）。
+        default_channels = 8
+        if self.master is None:
+            return default_channels
+        try:
+            sig = inspect.signature(self.master.mav.rc_channels_override_send)
+            channel_names = [
+                name for name in sig.parameters.keys()
+                if re.fullmatch(r"chan\d+_raw", name)
+            ]
+            if not channel_names:
+                return default_channels
+
+            max_channel = max(int(name[4:-4]) for name in channel_names)
+            return max(default_channels, max_channel)
+        except Exception:
+            return default_channels
 
     def on_gimbal_target(self, msg: Vector3):
         if not self._ensure_master():

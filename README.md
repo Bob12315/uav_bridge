@@ -57,7 +57,7 @@ source install/setup.bash
 - `/uav/cmd/waypoint` (NavSatFix) 经纬高
 - `/uav/cmd/attitude` (QuaternionStamped)
 - `/uav/cmd/thrust` (Float32) 0–1
-- `/uav/cmd/rc_override` (UInt16MultiArray) 8 通道 PWM
+- `/uav/cmd/rc_override` (UInt16MultiArray) 12 通道 PWM（1000–2000；0/65535=不覆盖）
 - `/uav/cmd/gimbal_target` (Vector3) pitch/roll/yaw (deg)
 - `/uav/cmd/screenshot` (Empty) 触发快门
 - `/uav/tx_error` (Bool) 发送异常标志
@@ -83,7 +83,7 @@ ros2 topic pub --once /uav/cmd/takeoff std_msgs/Float32 "{data: 5.0}"
 
 # 速度控制（ENU：x=E, y=N, z=U；角速度 yaw_rate=angular.z）
 ros2 topic pub --rate 10 /uav/cmd/velocity geometry_msgs/TwistStamped \
-  "{twist: {linear: {x: 1.0, y: 0.0, z: 0.0}, angular: {z: 0.2}}}"
+  "{twist: {linear: {x: 1.0, y: 0.0, z: 0.0}, angular: {z: 0}}}"
 
 # 机体系相对位移 + 相对偏航（x右, y前, z上；angular.z 单位 rad，示例 +30deg）
 ros2 topic pub --once /uav/cmd/move_relative_yaw geometry_msgs/Twist \
@@ -93,13 +93,13 @@ ros2 topic pub --once /uav/cmd/move_relative_yaw geometry_msgs/Twist \
 ros2 topic pub --once /uav/cmd/waypoint sensor_msgs/NavSatFix \
   "{latitude: 47.397742, longitude: 8.545594, altitude: 10.0}"
 
-# RC override（8通道 PWM，1000-2000；0/65535=不覆盖）
+# RC override（12通道 PWM，1000-2000；0/65535=不覆盖）
 ros2 topic pub --once /uav/cmd/rc_override std_msgs/UInt16MultiArray \
-  "{data: [1500,1500,1000,1500,1500,1500,1500,1500]}"
+  "{data: [0,0,0,0,0,0,0,0,0,2000,0,0]}"
 
 # 云台目标（pitch/roll/yaw，单位度；对应 MAV_CMD_DO_MOUNT_CONTROL）
 ros2 topic pub --once /uav/cmd/gimbal_target geometry_msgs/Vector3 \
-  "{x: -10.0, y: 0.0, z: 0.0}"
+  "{x: -40.0, y: 0.0, z: 0.0}"
 
 # 截图（一次快门，MAV_CMD_DO_DIGICAM_CONTROL）
 ros2 topic pub --once /uav/cmd/screenshot std_msgs/Empty "{}"
@@ -122,8 +122,8 @@ ros2 topic pub --once /uav/cmd/land std_msgs/Empty "{}"
 - 原始 MAVLink 打印：`ros2 run uav_bridge mavlink_dump -- --duration 5 --types HEARTBEAT,ATTITUDE`
 - 典型 SITL 流程：
   ```bash
-  gz sim -v4 -r iris_runway.sdf
-  sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON --console \
+gz sim -v4 -r iris.sdf
+sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON --console \
     --add-param-file=$HOME/gz_ws/src/ardupilot_gazebo/config/gazebo-iris-gimbal.parm \
     --out=udp:127.0.0.1:14540 --out=udp:127.0.0.1:14550 --out=udp:127.0.0.1:14551
   ```
